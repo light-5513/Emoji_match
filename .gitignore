@@ -5,3 +5,4 @@ dist
 .env
 .env.*
 video.mp4
+codecard.json

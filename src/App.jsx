@@ -93,7 +93,14 @@ export default function App() {
       total: totalScore,
       rounds: payloadRounds
     })
-      .then(() => setSubmitState({ status: 'sent', error: null }))
+      .then((resp) =>
+        setSubmitState({
+          status: 'sent',
+          error: null,
+          shareUrl: resp?.shareUrl || null,
+          reportId: resp?.reportId || null
+        })
+      )
       .catch((err) => setSubmitState({ status: 'error', error: err.message }));
   }, [screen, player, results, rounds, totalScore, submitState.status]);
 
@@ -126,6 +133,8 @@ export default function App() {
       <FinalResults
         player={player}
         total={totalScore}
+        rounds={rounds}
+        results={results}
         submitState={submitState}
         onPlayAgain={handlePlayAgain}
         onLeaderboard={handleLeaderboard}

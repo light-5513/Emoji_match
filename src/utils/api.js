@@ -5,7 +5,7 @@ export async function submitScore({ name, email, rollNumber, total, rounds }) {
     body: JSON.stringify({ name, email, rollNumber, total, rounds })
   });
   if (!res.ok) throw new Error(`submit failed: ${res.status}`);
-  return res.json();
+  return res.json(); // { id, reportId, total, shareUrl }
 }
 
 export async function fetchLeaderboard(limit = 25) {

@@ -11,6 +11,13 @@ const Webcam = forwardRef(function Webcam({ frozenImage }, ref) {
 
     async function start() {
       try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error(
+            window.isSecureContext
+              ? 'Camera API not supported in this browser.'
+              : 'Camera requires HTTPS. Open this site over https:// (or localhost).'
+          );
+        }
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 1280, height: 720, facingMode: 'user' },
           audio: false
