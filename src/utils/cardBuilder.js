@@ -1,10 +1,11 @@
 // Builds a downloadable result card PNG with all 3 round photos, scores,
-// player info, and an embedded QR pointing to the public share URL.
+// player info, and player's name. The QR + share link live on the result
+// screen UI — they intentionally do NOT appear on the downloaded card.
 
 import QRCode from 'qrcode';
 
-const W = 900;
-const H = 1320;
+const W = 720;
+const H = 1080;
 
 function loadImage(src) {
   return new Promise((resolve, reject) => {
@@ -26,34 +27,7 @@ function roundedRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function fillTextWrapped(ctx, text, x, y, maxWidth, lineHeight, maxLines = 2) {
-  const words = String(text || '').split(' ');
-  let line = '';
-  let lines = 0;
-  for (let i = 0; i < words.length; i++) {
-    const test = line + words[i] + ' ';
-    if (ctx.measureText(test).width > maxWidth && line) {
-      ctx.fillText(line.trim(), x, y);
-      line = words[i] + ' ';
-      y += lineHeight;
-      lines += 1;
-      if (lines >= maxLines - 1) {
-        // last line — clamp
-        let rest = words.slice(i).join(' ');
-        while (ctx.measureText(rest + '…').width > maxWidth && rest.length) {
-          rest = rest.slice(0, -1);
-        }
-        ctx.fillText(rest + (words.slice(i).join(' ').length > rest.length ? '…' : ''), x, y);
-        return;
-      }
-    } else {
-      line = test;
-    }
-  }
-  if (line) ctx.fillText(line.trim(), x, y);
-}
-
-export async function buildResultCard({ player, total, max, rounds, shareUrl }) {
+export async function buildResultCard({ player, total, max, rounds }) {
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -68,73 +42,90 @@ export async function buildResultCard({ player, total, max, rounds, shareUrl }) 
 
   // Outer card
   ctx.fillStyle = '#ffffff';
-  roundedRect(ctx, 32, 32, W - 64, H - 64, 32);
+  roundedRect(ctx, 24, 24, W - 48, H - 48, 28);
   ctx.fill();
   ctx.strokeStyle = 'rgba(15,23,42,0.06)';
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Title
+  // ── Header ────────────────────────────────────────────────────────────
+  const headerY = 80;
   ctx.fillStyle = '#0f172a';
-  ctx.font = '900 34px Inter, system-ui, sans-serif';
+  ctx.font = '900 28px Inter, system-ui, sans-serif';
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
-  ctx.fillText('EMOJI MIMIC GAME', 64, 96);
+  const titleText = 'EMOJI MIMIC GAME';
+  ctx.fillText(titleText, 56, headerY);
+  const titleWidth = ctx.measureText(titleText).width;
 
-  // GAME badge
+  // REPORT badge — positioned cleanly to the right of the title
+  ctx.font = '800 11px Inter, system-ui, sans-serif';
   const badgeText = 'REPORT';
-  ctx.font = '800 12px Inter, system-ui, sans-serif';
-  const badgeW = ctx.measureText(badgeText).width + 22;
+  const badgeW = ctx.measureText(badgeText).width + 18;
+  const badgeH = 22;
+  const badgeX = 56 + titleWidth + 12;
+  const badgeY = headerY - 18;
   ctx.fillStyle = '#ff6b3d';
-  roundedRect(ctx, 64 + ctx.measureText('EMOJI MIMIC GAME').width + 14, 76, badgeW, 24, 12);
+  roundedRect(ctx, badgeX, badgeY, badgeW, badgeH, 11);
   ctx.fill();
   ctx.fillStyle = '#fff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(
-    badgeText,
-    64 + ctx.measureText('EMOJI MIMIC GAME').width + 14 + badgeW / 2,
-    76 + 12
-  );
+  ctx.fillText(badgeText, badgeX + badgeW / 2, badgeY + badgeH / 2 + 1);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
 
-  // Player line
+  // Player info line
   ctx.fillStyle = '#64748b';
-  ctx.font = '500 18px Inter, system-ui, sans-serif';
+  ctx.font = '500 14px Inter, system-ui, sans-serif';
   const playerLine = `${player?.name || ''} · Roll ${player?.rollNumber || ''}`;
-  ctx.fillText(playerLine, 64, 134);
+  ctx.fillText(playerLine, 56, headerY + 24);
 
-  // Big total
+  // ── Big total ────────────────────────────────────────────────────────
   ctx.textAlign = 'center';
   ctx.fillStyle = '#0f172a';
-  ctx.font = '900 130px Inter, system-ui, sans-serif';
-  ctx.fillText(String(total), W / 2, 280);
+  ctx.font = '900 96px Inter, system-ui, sans-serif';
+  ctx.fillText(String(total), W / 2, 220);
   ctx.fillStyle = '#94a3b8';
-  ctx.font = '700 13px Inter, system-ui, sans-serif';
-  ctx.fillText(`OUT OF ${max} POSSIBLE`, W / 2, 312);
+  ctx.font = '700 11px Inter, system-ui, sans-serif';
+  ctx.fillText(`OUT OF ${max} POSSIBLE`, W / 2, 248);
   ctx.textAlign = 'left';
 
-  // Rounds
-  const roundY0 = 360;
+  // ── Round rows ───────────────────────────────────────────────────────
+  // Layout: [ emoji 96 ][ photo 200 ][ meta flexible ][ score ~80 ]
+  const rowsTop = 290;
   const rowH = 220;
+  const rowGap = 16;
+  const rowInner = rowH - rowGap;
+
+  const COL = {
+    emojiX: 56,
+    emojiW: 88,
+    photoX: 160,
+    photoW: 200,
+    metaX: 380,
+    metaW: 180,
+    scoreX: W - 56 // right-aligned anchor
+  };
 
   for (let i = 0; i < rounds.length; i++) {
     const r = rounds[i];
-    const y = roundY0 + i * rowH;
+    const yTop = rowsTop + i * rowH;
+    const yMid = yTop + rowInner / 2;
 
     // Row background
     ctx.fillStyle = '#fafafa';
-    roundedRect(ctx, 64, y, W - 128, rowH - 20, 20);
+    roundedRect(ctx, 40, yTop, W - 80, rowInner, 18);
     ctx.fill();
     ctx.strokeStyle = 'rgba(15,23,42,0.05)';
     ctx.stroke();
 
-    // Emoji column
-    ctx.font = '92px sans-serif';
+    // Emoji
+    ctx.font = '70px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(r.emoji || '', 132, y + (rowH - 20) / 2);
+    ctx.fillStyle = '#000';
+    ctx.fillText(r.emoji || '', COL.emojiX + COL.emojiW / 2, yMid);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
 
@@ -142,12 +133,12 @@ export async function buildResultCard({ player, total, max, rounds, shareUrl }) 
     if (r.imageDataUrl) {
       try {
         const img = await loadImage(r.imageDataUrl);
-        const px = 220;
-        const py = y + 20;
-        const pw = 220;
-        const ph = rowH - 60;
+        const px = COL.photoX;
+        const pw = COL.photoW;
+        const ph = rowInner - 32;
+        const py = yTop + (rowInner - ph) / 2;
         ctx.save();
-        roundedRect(ctx, px, py, pw, ph, 16);
+        roundedRect(ctx, px, py, pw, ph, 14);
         ctx.clip();
         const ar = img.width / img.height;
         let dw = pw;
@@ -165,51 +156,30 @@ export async function buildResultCard({ player, total, max, rounds, shareUrl }) 
       }
     }
 
-    // Title + features
+    // Meta (round + emotion only — no features text, prevents overlap)
     ctx.fillStyle = '#0f172a';
-    ctx.font = '800 18px Inter, system-ui, sans-serif';
-    ctx.fillText(`ROUND ${i + 1} · ${(r.emotion || '').toUpperCase()}`, 470, y + 50);
-    ctx.fillStyle = '#64748b';
-    ctx.font = '500 13px Inter, system-ui, sans-serif';
-    fillTextWrapped(ctx, (r.features || []).join(' · '), 470, y + 78, 220, 18, 3);
-
-    // Score
+    ctx.font = '800 16px Inter, system-ui, sans-serif';
+    ctx.fillText(`ROUND ${i + 1}`, COL.metaX, yMid - 8);
     ctx.fillStyle = '#ff6b3d';
-    ctx.font = '900 64px Inter, system-ui, sans-serif';
+    ctx.font = '900 22px Inter, system-ui, sans-serif';
+    ctx.fillText((r.emotion || '').toUpperCase(), COL.metaX, yMid + 22);
+
+    // Score (right-aligned, larger)
     ctx.textAlign = 'right';
-    ctx.fillText(String(r.score), W - 90, y + (rowH - 20) / 2 + 12);
+    ctx.fillStyle = '#ff6b3d';
+    ctx.font = '900 56px Inter, system-ui, sans-serif';
+    ctx.fillText(String(r.score), COL.scoreX, yMid + 4);
     ctx.fillStyle = '#94a3b8';
-    ctx.font = '800 11px Inter, system-ui, sans-serif';
-    ctx.fillText('MATCH', W - 90, y + (rowH - 20) / 2 + 30);
+    ctx.font = '800 10px Inter, system-ui, sans-serif';
+    ctx.fillText('MATCH', COL.scoreX, yMid + 24);
     ctx.textAlign = 'left';
   }
 
-  // QR + share text
-  const qrSize = 180;
-  const qrX = 64;
-  const qrY = H - qrSize - 80;
-  if (shareUrl) {
-    const qrCanvas = document.createElement('canvas');
-    await QRCode.toCanvas(qrCanvas, shareUrl, {
-      width: qrSize,
-      margin: 1,
-      color: { dark: '#0f172a', light: '#ffffff' }
-    });
-    ctx.drawImage(qrCanvas, qrX, qrY);
-  }
-
-  ctx.fillStyle = '#0f172a';
-  ctx.font = '800 18px Inter, system-ui, sans-serif';
-  ctx.fillText('Scan to view your report online', qrX + qrSize + 24, qrY + 60);
-  ctx.fillStyle = '#64748b';
-  ctx.font = '500 12px Inter, system-ui, sans-serif';
-  fillTextWrapped(ctx, shareUrl || '', qrX + qrSize + 24, qrY + 86, W - (qrX + qrSize + 24) - 80, 16, 2);
-
-  // Footer
+  // ── Footer ───────────────────────────────────────────────────────────
   ctx.fillStyle = '#94a3b8';
   ctx.font = '600 12px Inter, system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('powered by Technical Hub', W / 2, H - 56);
+  ctx.fillText('powered by Technical Hub', W / 2, H - 50);
   ctx.textAlign = 'left';
 
   return canvas.toDataURL('image/png');

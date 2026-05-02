@@ -97,7 +97,7 @@ export default function App() {
         setSubmitState({
           status: 'sent',
           error: null,
-          shareUrl: resp?.shareUrl || null,
+          cardUrl: resp?.cardUrl || null,
           reportId: resp?.reportId || null
         })
       )

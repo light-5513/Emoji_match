@@ -13,7 +13,7 @@ const RoundSchema = new mongoose.Schema(
 
 const ScoreSchema = new mongoose.Schema(
   {
-    reportId: { type: String, index: true, unique: true, sparse: true },
+    reportId: { type: String, index: true },
     name: { type: String, required: true, index: true },
     email: { type: String, required: true, index: true },
     rollNumber: { type: String, required: true, index: true },

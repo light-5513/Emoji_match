@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { MAX_SCORE, getCompliment } from '../utils/rounds.js';
 import AnimatedScore, { scoreTierClass } from './AnimatedScore.jsx';
 import { buildResultCard, buildQrDataUrl } from '../utils/cardBuilder.js';
+import { uploadCard } from '../utils/api.js';
 
 export default function FinalResults({
   player,
@@ -13,35 +14,41 @@ export default function FinalResults({
   onLeaderboard
 }) {
   const status = submitState?.status || 'idle';
-  const shareUrl = submitState?.shareUrl || null;
+  const cardUrl = submitState?.cardUrl || null;
+  const reportId = submitState?.reportId || null;
   const tierPct = Math.round((total / MAX_SCORE) * 100);
   const tier = scoreTierClass(tierPct);
 
   const [qrDataUrl, setQrDataUrl] = useState(null);
   const [cardDataUrl, setCardDataUrl] = useState(null);
   const [building, setBuilding] = useState(false);
-  const [buildError, setBuildError] = useState(null);
+  const [uploadStatus, setUploadStatus] = useState('idle'); // idle | uploading | done | error
+  const [uploadError, setUploadError] = useState(null);
 
-  // Build QR as soon as the share URL arrives.
+  // QR for the GCS card URL (the card itself will live at this exact URL).
   useEffect(() => {
-    if (!shareUrl) return;
+    if (!cardUrl) return;
     let cancelled = false;
-    buildQrDataUrl(shareUrl, 220)
-      .then((dataUrl) => {
-        if (!cancelled) setQrDataUrl(dataUrl);
-      })
+    buildQrDataUrl(cardUrl, 220)
+      .then((dataUrl) => !cancelled && setQrDataUrl(dataUrl))
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [shareUrl]);
+  }, [cardUrl]);
 
-  // Build the downloadable card once everything is ready.
+  // Build the card (with QR baked in pointing to its own GCS URL),
+  // then upload to the backend so it lives at that GCS URL. If cardUrl is
+  // missing (GCS not configured on server), still build the card without a
+  // QR so the user can at least download it locally.
   useEffect(() => {
-    if (!shareUrl || !rounds || !results || results.length === 0) return;
+    if (status !== 'sent') return;
+    if (!rounds || !results || results.length === 0) return;
+
     let cancelled = false;
     setBuilding(true);
-    setBuildError(null);
+    setUploadStatus('idle');
+    setUploadError(null);
 
     const cardRounds = rounds.map((r, i) => ({
       emotion: r.emotion,
@@ -51,27 +58,41 @@ export default function FinalResults({
       imageDataUrl: results[i]?.imageDataUrl
     }));
 
-    buildResultCard({
-      player,
-      total,
-      max: MAX_SCORE,
-      rounds: cardRounds,
-      shareUrl
-    })
-      .then((dataUrl) => {
-        if (!cancelled) setCardDataUrl(dataUrl);
-      })
-      .catch((err) => {
-        if (!cancelled) setBuildError(err.message);
-      })
-      .finally(() => {
-        if (!cancelled) setBuilding(false);
-      });
+    (async () => {
+      try {
+        const dataUrl = await buildResultCard({
+          player,
+          total,
+          max: MAX_SCORE,
+          rounds: cardRounds,
+          shareUrl: cardUrl || ''
+        });
+        if (cancelled) return;
+        setCardDataUrl(dataUrl);
+        setBuilding(false);
+
+        if (!cardUrl || !reportId) {
+          setUploadStatus('error');
+          setUploadError('Server returned no cardUrl — GCS not configured on backend');
+          return;
+        }
+
+        setUploadStatus('uploading');
+        await uploadCard(reportId, dataUrl);
+        if (cancelled) return;
+        setUploadStatus('done');
+      } catch (err) {
+        if (cancelled) return;
+        setBuilding(false);
+        setUploadStatus('error');
+        setUploadError(err.message);
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [shareUrl, rounds, results, player, total]);
+  }, [cardUrl, reportId, rounds, results, player, total]);
 
   function handleDownload() {
     if (!cardDataUrl) return;
@@ -99,7 +120,6 @@ export default function FinalResults({
           <div className="absolute -top-24 -right-24 w-64 h-64 rounded-full bg-coral-100 blur-3xl opacity-60 pointer-events-none" />
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center relative">
-            {/* LEFT: total + compliment */}
             <div className="text-center md:text-left flex flex-col items-center md:items-start gap-4">
               <div className="text-6xl animate-pop">🏆</div>
 
@@ -116,23 +136,37 @@ export default function FinalResults({
                 {getCompliment(player?.name, total)}
               </p>
 
-              <div className="text-xs text-slate-500 min-h-[18px]">
+              <div className="text-xs min-h-[18px]">
                 {status === 'sending' && (
-                  <span className="inline-flex items-center gap-2">
+                  <span className="inline-flex items-center gap-2 text-slate-500">
                     <span className="inline-block w-3 h-3 border-2 border-coral-500 border-t-transparent rounded-full animate-spin" />
                     Saving and uploading photos…
                   </span>
                 )}
-                {status === 'sent' && shareUrl && (
-                  <span className="text-emerald-600 font-semibold">✓ Report saved</span>
+                {status === 'sent' && uploadStatus === 'uploading' && (
+                  <span className="inline-flex items-center gap-2 text-slate-500">
+                    <span className="inline-block w-3 h-3 border-2 border-coral-500 border-t-transparent rounded-full animate-spin" />
+                    Uploading report card to bucket…
+                  </span>
                 )}
-                {status === 'error' && (
-                  <span className="text-coral-600">Could not save: {submitState.error}</span>
+                {status === 'sent' && uploadStatus === 'done' && (
+                  <span className="text-emerald-600 font-semibold">
+                    ✓ Report uploaded to Cloud Storage
+                  </span>
+                )}
+                {status === 'sent' && !cardUrl && uploadStatus !== 'error' && (
+                  <span className="text-coral-600 font-semibold">
+                    ⚠ Server didn't return cardUrl — restart the API server
+                  </span>
+                )}
+                {(status === 'error' || uploadStatus === 'error') && (
+                  <span className="text-coral-600">
+                    {submitState?.error || uploadError || 'Upload failed'}
+                  </span>
                 )}
               </div>
             </div>
 
-            {/* RIGHT: QR + download */}
             <div className="flex flex-col items-center gap-4">
               <div className="bg-white border-2 border-slate-100 rounded-3xl p-4 shadow-card">
                 {qrDataUrl ? (
@@ -146,16 +180,16 @@ export default function FinalResults({
 
               <div className="text-center">
                 <div className="font-extrabold tracking-widest text-sm text-slate-700">
-                  SCAN TO VIEW REPORT
+                  SCAN TO DOWNLOAD REPORT
                 </div>
-                {shareUrl ? (
+                {cardUrl ? (
                   <a
-                    href={shareUrl}
+                    href={cardUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="text-xs text-coral-600 hover:underline break-all mt-1 inline-block max-w-xs"
                   >
-                    {shareUrl}
+                    {cardUrl}
                   </a>
                 ) : null}
               </div>
@@ -169,10 +203,6 @@ export default function FinalResults({
               >
                 {building ? 'Preparing…' : '⬇ DOWNLOAD CARD'}
               </button>
-
-              {buildError ? (
-                <div className="text-xs text-coral-600">{buildError}</div>
-              ) : null}
             </div>
           </div>
 

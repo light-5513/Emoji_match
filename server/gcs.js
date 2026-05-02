@@ -26,6 +26,11 @@ export function getBucketName() {
   return bucketName;
 }
 
+export function publicUrl(key) {
+  if (!bucketName) return null;
+  return `https://storage.googleapis.com/${bucketName}/${encodeURI(key)}`;
+}
+
 export async function uploadBuffer({ key, buffer, contentType, makePublic = true }) {
   if (!isConfigured()) throw new Error('GCS not configured (set GCS_BUCKET and GOOGLE_CREDENTIALS_PATH in .env)');
   const bucket = storage.bucket(bucketName);

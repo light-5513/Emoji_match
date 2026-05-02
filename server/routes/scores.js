@@ -1,7 +1,12 @@
 import express from 'express';
 import crypto from 'crypto';
 import { Score } from '../models/Score.js';
-import { uploadBuffer, dataUrlToBuffer, isConfigured as gcsReady } from '../gcs.js';
+import {
+  uploadBuffer,
+  dataUrlToBuffer,
+  isConfigured as gcsReady,
+  publicUrl
+} from '../gcs.js';
 
 const router = express.Router();
 
@@ -31,7 +36,7 @@ router.post('/', async (req, res, next) => {
     const reportId = crypto.randomBytes(8).toString('hex');
 
     if (!gcsReady()) {
-      console.error('[gcs] not configured — skipping photo uploads. Check GCS_BUCKET and GOOGLE_CREDENTIALS_PATH in .env');
+      console.error('[gcs] not configured — uploads will be skipped');
     }
 
     // Upload each captured photo to GCS in parallel.
@@ -51,7 +56,6 @@ router.post('/', async (req, res, next) => {
             }
           } catch (err) {
             console.error(`[gcs] photo upload FAILED (round ${i + 1}):`, err.message);
-            console.error(err);
           }
         }
         return {
@@ -68,26 +72,62 @@ router.post('/', async (req, res, next) => {
       ? total
       : enrichedRounds.reduce((s, r) => s + (r.score || 0), 0);
 
-    const doc = await Score.create({
+    let doc;
+    try {
+      doc = await Score.create({
+        reportId,
+        name,
+        email,
+        rollNumber,
+        total: sumTotal,
+        rounds: enrichedRounds
+      });
+      console.log(`[mongo] saved score ${doc._id} (reportId=${reportId})`);
+    } catch (err) {
+      console.error('[mongo] save FAILED:', err.message);
+      // Don't fail the whole request just because Mongo is down — the photos
+      // are already on GCS and the user can still get their card.
+      doc = { _id: null };
+    }
+
+    // Predicted URL of the card PNG on GCS (frontend will upload it next).
+    const cardKey = `reports/${reportId}/card.png`;
+    const cardUrl = gcsReady() ? publicUrl(cardKey) : null;
+
+    res.json({
+      id: doc._id,
       reportId,
-      name,
-      email,
-      rollNumber,
       total: sumTotal,
-      rounds: enrichedRounds
+      cardUrl,
+      cardKey
     });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    // Prefer PUBLIC_URL when set (so QR codes encode the user-facing host, not
-    // localhost:3001 behind the Vite/nginx proxy). Fall back to forwarded
-    // headers, then to the raw request host.
-    const publicBase = (process.env.PUBLIC_URL || '').trim().replace(/\/$/, '');
-    const fwdProto = req.get('x-forwarded-proto');
-    const fwdHost = req.get('x-forwarded-host');
-    const host = publicBase
-      || (fwdHost ? `${fwdProto || 'https'}://${fwdHost}` : `${req.protocol}://${req.get('host')}`);
-    const shareUrl = `${host}/report/${reportId}`;
+// Receive the final card PNG (with QR baked in) from the client and upload it
+// to GCS at the predicted URL. The client built the card *with* the QR
+// pointing at this very URL, so the upload completes the loop.
+router.post('/:reportId/card', async (req, res, next) => {
+  try {
+    const { reportId } = req.params;
+    const { cardImage } = req.body || {};
+    if (!cardImage) return res.status(400).json({ error: 'cardImage is required' });
+    if (!gcsReady()) return res.status(500).json({ error: 'GCS not configured' });
 
-    res.json({ id: doc._id, reportId, total: sumTotal, shareUrl });
+    const decoded = dataUrlToBuffer(cardImage);
+    if (!decoded) return res.status(400).json({ error: 'Invalid cardImage data URL' });
+
+    const cardKey = `reports/${reportId}/card.png`;
+    const url = await uploadBuffer({
+      key: cardKey,
+      buffer: decoded.buffer,
+      contentType: 'image/png'
+    });
+    console.log(`[gcs] uploaded card -> ${url}`);
+
+    res.json({ ok: true, cardUrl: url });
   } catch (err) {
     next(err);
   }
