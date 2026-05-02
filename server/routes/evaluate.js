@@ -4,16 +4,32 @@ import OpenAI from 'openai';
 const router = express.Router();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const PROMPT = (emotion) => `You are a strict but fair judge for an "Emoji Mimic" party game.
+// Criteria-based rubric. Each sub-score is 0-25 and the model is *required* to
+// use the full range with non-rounded integers — this prevents the bucketed
+// "85 / 45 / 20" output that comes from asking for one round number.
+const PROMPT = (emotion) => `You are a STRICT, expert judge for the "Emoji Mimic" game.
 
 The player is trying to mimic the "${emotion}" emoji with their face.
 
-Look at the captured photo and:
-1. Score how well the facial expression matches a "${emotion}" emoji on a scale of 0 to 100. Be generous to genuine, committed attempts (a clear matching expression should score 75+). Penalize blank/neutral faces or wrong emotions. Reward effort and clarity.
-2. List exactly 3 short observed facial features (e.g. "Left cheek raised", "Brows furrowed", "Lips parted"). Keep each under 5 words.
+Analyze the photo and score these FOUR independent criteria. Each is an integer from 0 to 25:
 
-Respond ONLY with minified JSON in this exact shape:
-{"score": <0-100 integer>, "features": ["...","...","..."]}`;
+1. mouth        — Does the mouth shape match a "${emotion}" emoji? (lips, teeth, jaw, tongue position)
+2. eyes         — Do the eyes match? (open/closed/squinted/wide; gaze direction)
+3. brows        — Do the eyebrows match? (raised/furrowed/lowered/asymmetric)
+4. commitment   — Does the overall expression read clearly as "${emotion}"? Is the player committed, or half-hearted? Reward effort, punish blank/neutral faces.
+
+SCORING DISCIPLINE — read carefully:
+- Use the FULL range. Use ANY integer 0..25 — do NOT round to multiples of 5.
+- A perfect mouth shape with poor eyes might be 23 + 11 + 14 + 18 = 66, not 65.
+- If the face is neutral, looking away, or showing a different emotion: scores below 10 each.
+- If the face is a clear, committed mimic of "${emotion}": scores 20–25 each.
+- Be HONEST and STRICT. Half-hearted attempts deserve mid-range scores, not generous ones.
+- If no face / blurry / blocked: all scores 0.
+
+Also list exactly 3 short observed facial features (each under 5 words, e.g. "Left cheek raised", "Brows furrowed", "Lips parted").
+
+Respond ONLY with minified JSON in this exact shape (no prose, no markdown):
+{"mouth":<int>,"eyes":<int>,"brows":<int>,"commitment":<int>,"features":["...","...","..."]}`;
 
 router.post('/', async (req, res, next) => {
   try {
@@ -23,16 +39,16 @@ router.post('/', async (req, res, next) => {
     }
 
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      max_tokens: 200,
-      temperature: 0.2,
+      model: 'gpt-4o',
+      max_tokens: 250,
+      temperature: 0, // deterministic for the same input
       response_format: { type: 'json_object' },
       messages: [
         {
           role: 'user',
           content: [
             { type: 'text', text: PROMPT(targetEmotion) },
-            { type: 'image_url', image_url: { url: imageDataUrl, detail: 'low' } }
+            { type: 'image_url', image_url: { url: imageDataUrl, detail: 'high' } }
           ]
         }
       ]
@@ -43,15 +59,25 @@ router.post('/', async (req, res, next) => {
     try {
       parsed = JSON.parse(text);
     } catch {
-      parsed = { score: 0, features: ['Could not parse model response'] };
+      parsed = {};
     }
 
-    const score = Math.max(0, Math.min(100, Math.round(Number(parsed.score) || 0)));
+    const clamp = (v) => Math.max(0, Math.min(25, Math.round(Number(v) || 0)));
+    const mouth = clamp(parsed.mouth);
+    const eyes = clamp(parsed.eyes);
+    const brows = clamp(parsed.brows);
+    const commitment = clamp(parsed.commitment);
+    const score = mouth + eyes + brows + commitment; // 0..100, naturally varied
+
     const features = Array.isArray(parsed.features)
       ? parsed.features.slice(0, 3).map(String)
       : [];
 
-    res.json({ score, features });
+    res.json({
+      score,
+      features,
+      breakdown: { mouth, eyes, brows, commitment }
+    });
   } catch (err) {
     next(err);
   }

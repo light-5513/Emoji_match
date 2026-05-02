@@ -1,6 +1,7 @@
-// Evaluator — calls the backend which runs OpenAI Vision (gpt-4o-mini) for fast,
-// accurate expression scoring. Contract:
-//   { imageDataUrl, targetEmotion } -> { score, features }
+// Evaluator — calls the backend which runs OpenAI gpt-4o vision with a strict
+// criteria-based rubric. Contract:
+//   { imageDataUrl, targetEmotion }
+//     -> { score, features, breakdown: { mouth, eyes, brows, commitment } }
 
 export async function evaluateExpression({ imageDataUrl, targetEmotion }) {
   if (!imageDataUrl) {
@@ -21,6 +22,7 @@ export async function evaluateExpression({ imageDataUrl, targetEmotion }) {
     return {
       score: Math.max(0, Math.min(100, Number(data.score) || 0)),
       features: Array.isArray(data.features) ? data.features.slice(0, 3) : [],
+      breakdown: data.breakdown || null,
       imageDataUrl
     };
   } catch (err) {
